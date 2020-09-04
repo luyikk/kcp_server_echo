@@ -4,12 +4,14 @@ use std::cmp;
 use std::collections::VecDeque;
 use std::io::{self, Cursor, Read, Write};
 
-use crate::error::Error;
-use crate::KcpResult;
+use super::error::Error;
+use super::KcpResult;
 use bytes::{Buf, BufMut, BytesMut, Bytes};
 use std::io::ErrorKind;
-use std::sync::Weak;
-
+use std::sync::{Weak, Arc};
+use log::*;
+use udp_server::UdpSend;
+use futures::executor::block_on;
 
 const KCP_RTO_NDL: u32 = 30;
 const KCP_RTO_MIN: u32 = 100;
@@ -124,28 +126,18 @@ impl KcpSegment {
     }
 }
 
-pub trait KcpWrite{
-   fn write_all(&self,data:&[u8])->io::Result<usize>;
-}
 
 
-#[derive(Default)]
-struct KcpOutput<T: KcpWrite>(Weak<T>);
+struct KcpOutput(Arc<UdpSend>);
 
-impl<T:KcpWrite> KcpWrite for KcpOutput<T>{
-    fn write_all(&self, data: &[u8]) -> io::Result<usize> {
-        let p = self.0.upgrade();
-        return match p {
-            Some(output) => output.write_all(data),
-            None => Err(io::Error::new(ErrorKind::NotFound,Error::RecvQueueEmpty))
-        };
+impl KcpOutput{
+    pub async fn send(&self,data:&[u8])->io::Result<usize>{
+            self.0.send(data).await
     }
 }
 
-
 /// KCP control
-#[derive(Default)]
-pub struct Kcp<Output: KcpWrite> {
+pub struct Kcp {
     /// Conversation ID
     conv: u32,
     /// Maximun Transmission Unit
@@ -229,15 +221,15 @@ pub struct Kcp<Output: KcpWrite> {
     /// Get conv from the next input call
     input_conv: bool,
 
-    output: KcpOutput<Output>,
+    output: KcpOutput,
 }
 
-impl<Output: KcpWrite> Kcp<Output> {
+impl Kcp {
     /// Creates a KCP control object, `conv` must be equal in both endpoints in one connection.
     /// `output` is the callback object for writing.
     ///
     /// `conv` represents conversation.
-    pub fn new(conv: u32, output: Weak<Output>) -> Self {
+    pub fn new(conv: u32, output: Arc<UdpSend>) -> Self {
         Kcp::construct(conv, output, false)
     }
 
@@ -245,13 +237,13 @@ impl<Output: KcpWrite> Kcp<Output> {
     /// `output` is the callback object for writing.
     ///
     /// `conv` represents conversation.
-    pub fn new_stream(conv: u32, output: Weak<Output>) -> Self {
+    pub fn new_stream(conv: u32, output: Arc<UdpSend>) -> Self {
         Kcp::construct(conv, output, true)
     }
 
-    fn construct(conv: u32, output: Weak<Output>, stream: bool) -> Self {
+    fn construct(conv: u32, output: Arc<UdpSend>, stream: bool) -> Self {
         Kcp {
-            conv: conv,
+            conv,
             snd_una: 0,
             snd_nxt: 0,
             rcv_nxt: 0,
@@ -270,7 +262,7 @@ impl<Output: KcpWrite> Kcp<Output> {
             incr: 0,
             fastresend: 0,
             nocwnd: false,
-            stream: stream,
+            stream,
             snd_wnd: KCP_WND_SND,
             rcv_wnd: KCP_WND_RCV,
             rmt_wnd: KCP_WND_RCV,
@@ -754,12 +746,12 @@ impl<Output: KcpWrite> Kcp<Output> {
         }
     }
 
-    fn _flush_ack(&mut self, segment: &mut KcpSegment) -> KcpResult<()> {
+     async fn _flush_ack(&mut self, segment: &mut KcpSegment) -> KcpResult<()> {
         // flush acknowledges
         // while let Some((sn, ts)) = self.acklist.pop_front() {
         for &(sn, ts) in &self.acklist {
             if self.buf.len() + KCP_OVERHEAD > self.mtu as usize {
-                self.output.write_all(&self.buf)?;
+                self.output.send(&self.buf).await ?;
                 self.buf.clear();
             }
             segment.sn = sn;
@@ -796,12 +788,12 @@ impl<Output: KcpWrite> Kcp<Output> {
         }
     }
 
-    fn flush_probe_commands(&mut self, segment: &mut KcpSegment) -> KcpResult<()> {
+   async fn flush_probe_commands(&mut self, segment: &mut KcpSegment) -> KcpResult<()> {
         // flush window probing commands
         if (self.probe & KCP_ASK_SEND) != 0 {
             segment.cmd = KCP_CMD_WASK;
             if self.buf.len() + KCP_OVERHEAD > self.mtu as usize {
-                self.output.write_all(&self.buf)?;
+                self.output.send(&self.buf).await?;
                 self.buf.clear();
             }
             segment.encode(&mut self.buf);
@@ -811,7 +803,7 @@ impl<Output: KcpWrite> Kcp<Output> {
         if (self.probe & KCP_ASK_TELL) != 0 {
             segment.cmd = KCP_CMD_WINS;
             if self.buf.len() + KCP_OVERHEAD > self.mtu as usize {
-                self.output.write_all(&self.buf)?;
+                self.output.send(&self.buf).await?;
                 self.buf.clear();
             }
             segment.encode(&mut self.buf);
@@ -823,7 +815,7 @@ impl<Output: KcpWrite> Kcp<Output> {
     }
 
     /// Flush pending ACKs
-    pub fn flush_ack(&mut self) -> KcpResult<()> {
+    pub async fn flush_ack(&mut self) -> KcpResult<()> {
         if !self.updated {
             debug!("flush updated() must be called at least once");
             return Err(Error::NeedUpdate);
@@ -835,11 +827,11 @@ impl<Output: KcpWrite> Kcp<Output> {
         segment.wnd = self.wnd_unused();
         segment.una = self.rcv_nxt;
 
-        self._flush_ack(&mut segment)
+        self._flush_ack(&mut segment).await
     }
 
     /// Flush pending data in buffer.
-    pub fn flush(&mut self) -> KcpResult<()> {
+    pub async fn flush(&mut self) -> KcpResult<()> {
         if !self.updated {
             debug!("flush updated() must be called at least once");
             return Err(Error::NeedUpdate);
@@ -851,9 +843,9 @@ impl<Output: KcpWrite> Kcp<Output> {
         segment.wnd = self.wnd_unused();
         segment.una = self.rcv_nxt;
 
-        self._flush_ack(&mut segment)?;
+        self._flush_ack(&mut segment).await?;
         self.probe_wnd_size();
-        self.flush_probe_commands(&mut segment)?;
+        self.flush_probe_commands(&mut segment).await?;
 
         // println!("SNDBUF size {}", self.snd_buf.len());
 
@@ -931,7 +923,7 @@ impl<Output: KcpWrite> Kcp<Output> {
                 let need = KCP_OVERHEAD + snd_segment.data.len();
 
                 if self.buf.len() + need > self.mtu as usize {
-                    self.output.write_all(&self.buf)?;
+                    self.output.send(&self.buf).await?;
                     self.buf.clear();
                 }
 
@@ -945,7 +937,7 @@ impl<Output: KcpWrite> Kcp<Output> {
 
         // Flush all data in buffer
         if !self.buf.is_empty() {
-            self.output.write_all(&self.buf)?;
+            self.output.send(&self.buf).await?;
             self.buf.clear();
         }
 
@@ -977,10 +969,22 @@ impl<Output: KcpWrite> Kcp<Output> {
         Ok(())
     }
 
+    pub async fn flush_async(&mut self)-> KcpResult<()> {
+        self.current += 10;
+
+        if !self.updated {
+            self.updated = true;
+            self.ts_flush = self.current;
+        }
+
+        self.flush().await?;
+        Ok(())
+    }
+
     /// Update state every 10ms ~ 100ms.
     ///
     /// Or you can ask `check` when to call this again.
-    pub fn update(&mut self, current: u32) -> KcpResult<()> {
+    pub async fn update(&mut self, current: u32) -> KcpResult<()> {
         self.current = current;
 
         if !self.updated {
@@ -1000,7 +1004,7 @@ impl<Output: KcpWrite> Kcp<Output> {
             if timediff(self.current, self.ts_flush) >= 0 {
                 self.ts_flush = self.current + self.interval;
             }
-            self.flush()?;
+            self.flush().await?;
         }
 
         Ok(())
@@ -1172,3 +1176,4 @@ impl<Output: KcpWrite> Kcp<Output> {
         self.state != 0
     }
 }
+

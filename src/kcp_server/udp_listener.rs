@@ -22,3 +22,4 @@ impl<I, R, T, S> UdpListener for UdpServer<I, R, T, S>
         block_on(async move { self.start().await })
     }
 }
+

@@ -1,43 +1,88 @@
 use tokio::sync::Mutex;
 use udp_server::{UdpSend, TokenStore};
-use crate::kcp::{Kcp,KcpWrite};
+use crate::kcp::{Kcp, KcpResult};
 use futures::executor::block_on;
+use std::time::Instant;
+use std::cell::{RefCell, UnsafeCell};
+use std::sync::atomic::AtomicI64;
+use std::sync::Arc;
+use std::ops::Deref;
 
-/// 实现UDPSend KcpWrite 实现,好通过UDP 发送数据
-impl KcpWrite for UdpSend{
-    fn write_all(&self, data: &[u8]) -> std::io::Result<usize> {
-        block_on(async move{
-            self.send(data).await
-        })
+
+pub struct KcpInputRecv(Arc<UnsafeCell<Kcp>>);
+unsafe impl Send for KcpInputRecv{}
+unsafe impl Sync for KcpInputRecv{}
+
+impl KcpInputRecv{
+    pub fn peeksize(&self)-> KcpResult<usize>{
+        unsafe {
+            (*self.0.get()).peeksize()
+        }
+    }
+
+    pub fn input(&self, buf: &[u8]) -> KcpResult<usize>{
+        unsafe {
+            (*self.0.get()).input(buf)
+        }
+    }
+
+    pub fn recv(&self, buf: &mut [u8]) -> KcpResult<usize>{
+        unsafe {
+            (*self.0.get()).recv(buf)
+        }
     }
 }
 
 
 
-/// 用来存储KCP 对象
-pub struct KcpStore(Option<Box<Kcp<UdpSend>>>);
-impl KcpStore {
-    /// 是否有值
-    pub fn have(&self) -> bool {
-        match &self.0 {
-            None => false,
-            Some(_) => true,
-        }
-    }
+pub struct KcpSend(Arc<UnsafeCell<Kcp>>);
+unsafe impl Sync for KcpSend{}
+unsafe impl Send for KcpSend{}
 
-    ///获取
-    pub fn get(&mut self) -> Option<&mut Box<Kcp<UdpSend>>> {
-        match self.0 {
-            None => None,
-            Some(ref mut v) => Some(v),
+impl KcpSend{
+    pub fn send(&self, mut buf: &[u8]) -> KcpResult<usize>{
+        unsafe {
+            (*self.0.get()).send(buf)
         }
-    }
-
-    ///设置
-    pub fn set(&mut self, v: Box<Kcp<UdpSend>>) {
-        self.0 = Some(v);
     }
 }
+
+pub struct KcpUpdate(Arc<UnsafeCell<Kcp>>);
+unsafe impl Sync for KcpUpdate{}
+unsafe impl Send for KcpUpdate{}
+
+impl KcpUpdate{
+    pub async fn update(&self, current: u32) -> KcpResult<()>{
+        unsafe {
+            let x=self.0.get();
+            (*x).update(current).await
+        }
+    }
+
+    pub async fn flush(&self) -> KcpResult<()>{
+        unsafe {
+            (*self.0.get()).flush().await
+        }
+    }
+
+    pub async fn flush_async(&self)-> KcpResult<()>{
+        unsafe {
+            (*self.0.get()).flush_async().await
+        }
+    }
+}
+
+impl Kcp{
+    pub fn split(self)->(KcpInputRecv,KcpSend,KcpUpdate){
+        let recv = Arc::new(UnsafeCell::new(self));
+        let send = recv.clone();
+        let update = recv.clone();
+
+        (KcpInputRecv(recv),KcpSend(send),KcpUpdate(update))
+    }
+}
+
+
 
 /// KCP Peer
 /// UDP的包进入 KCP PEER 经过KCP 处理后 输出
@@ -45,8 +90,14 @@ impl KcpStore {
 /// 同时还需要一个UPDATE 线程 去10MS 一次的运行KCP UPDATE
 /// token 用于扩赞逻辑上下文
 pub struct KcpPeer<T: Send> {
-    inner: Mutex<KcpStore>,
+    pub kcp_recv:Arc<Mutex<KcpInputRecv>>,
+    pub kcp_send:Arc<Mutex<KcpSend>>,
+    pub kcp_update:Arc<Mutex<KcpUpdate>>,
     pub conv: u32,
     pub addr: String,
     pub token: Mutex<TokenStore<T>>,
+    pub last_rev_time: AtomicI64
 }
+
+unsafe impl<T: Send> Send for KcpPeer<T>{}
+unsafe impl<T: Send> Sync for KcpPeer<T>{}
