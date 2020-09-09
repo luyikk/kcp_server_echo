@@ -1,12 +1,9 @@
 use tokio::sync::Mutex;
-use udp_server::{UdpSend, TokenStore};
+use udp_server:: TokenStore;
 use crate::kcp::{Kcp, KcpResult};
-use futures::executor::block_on;
-use std::time::Instant;
-use std::cell::{RefCell, UnsafeCell};
+use std::cell::UnsafeCell;
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
-use std::ops::Deref;
 use std::net::SocketAddr;
 use std::future::Future;
 
@@ -44,7 +41,7 @@ unsafe impl Sync for KcpSend{}
 unsafe impl Send for KcpSend{}
 
 impl KcpSend{
-    pub fn send(&self, mut buf: &[u8]) -> KcpResult<usize>{
+    pub fn send(&self,  buf: &[u8]) -> KcpResult<usize>{
         unsafe {
             (*self.0.get()).send(buf)
         }

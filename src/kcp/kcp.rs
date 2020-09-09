@@ -7,11 +7,9 @@ use std::io::{self, Cursor, Read, Write};
 use super::error::Error;
 use super::KcpResult;
 use bytes::{Buf, BufMut, BytesMut, Bytes};
-use std::io::ErrorKind;
-use std::sync::{Weak, Arc};
+use std::sync::Arc;
 use log::*;
 use udp_server::UdpSend;
-use futures::executor::block_on;
 
 const KCP_RTO_NDL: u32 = 30;
 const KCP_RTO_MIN: u32 = 100;

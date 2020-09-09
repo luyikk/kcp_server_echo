@@ -1,26 +1,20 @@
-use std::sync::{Arc, Weak};
-use tokio::sync::{Mutex, MutexGuard};
+use std::sync::Arc;
+use tokio::sync::Mutex;
 use super::UdpServerStore;
 use std::sync::atomic::{AtomicU32, Ordering, AtomicI64};
 use crate::kcp_server::kcp_peer::KcpPeer;
 use crate::kcp_server::buff_input_store::BuffInputStore;
 use std::collections::HashMap;
-use std::net::{SocketAddr, ToSocketAddrs};
-use std::time::{Instant, Duration};
+use std::net::ToSocketAddrs;
+use std::time::Duration;
 use crate::kcp_server::kcp_config::KcpConfig;
 use std::cell::{UnsafeCell, RefCell};
-use std::panic::UnwindSafe;
 use std::error::Error;
-use udp_server::{UdpServer, Peer, TokenStore, UdpSend};
+use udp_server::{UdpServer, Peer, TokenStore};
 use log::*;
 use bytes::{Bytes, BytesMut, BufMut};
-use std::thread;
-use std::thread::sleep;
-use chrono::Timelike;
 use crate::kcp::Kcp;
 use tokio::time::delay_for;
-use chrono::format::Numeric::Ordinal;
-use std::io::Write;
 use std::future::Future;
 
 /// KcpListener 整个KCP 服务的入口点
@@ -289,9 +283,9 @@ impl<S,R> KcpListener<S,R>
     /// 如果第一次发包 看看发的是不是 [u8;4] 是的话 生成一个conv id,同时配置一个KcpPeer存储于UDP TOKEN中
     #[inline]
     async fn make_kcp_peer(this: Arc<Self>, peer: Arc<Peer<()>>, data: Vec<u8>) -> Result<(), Box<dyn Error>> {
-        /// 清除上一次的kcp
-        /// 创建一个 conv 写入临时连接表
-        /// 给客户端回复 conv
+        // 清除上一次的kcp
+        // 创建一个 conv 写入临时连接表
+        // 给客户端回复 conv
         let conv = this.make_conv();
         info!("{} make conv:{}", peer.addr, conv);
         //给客户端回复
@@ -311,7 +305,7 @@ impl<S,R> KcpListener<S,R>
         let (recv,send)= kcp.split();
         recv.input(buff)?;
 
-       let mut kcp_peer_obj = KcpPeer {
+       let  kcp_peer_obj = KcpPeer {
             kcp_recv:Arc::new(Mutex::new(recv)),
             kcp_send:Arc::new(Mutex::new(send)),
             conv,
@@ -319,11 +313,6 @@ impl<S,R> KcpListener<S,R>
             token: Mutex::new(TokenStore(None)),
             last_rev_time: AtomicI64::new(chrono::Local::now().timestamp())
         };
-
-
-
-
-
 
         let kcp_peer_ptr=Arc::new(kcp_peer_obj);
 

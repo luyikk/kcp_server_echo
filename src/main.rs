@@ -4,7 +4,6 @@ mod kcp_server;
 mod kcp;
 
 use std::error::Error;
-use futures::executor::block_on;
 use crate::kcp_server::kcp_config::{KcpConfig, KcpNoDelayConfig};
 use env_logger::Builder;
 use log::LevelFilter;
@@ -19,7 +18,7 @@ async fn main() -> Result<(), Box<dyn Error>>{
     let mut config = KcpConfig::default();
     config.nodelay = Some(KcpNoDelayConfig::fastest());
 
-    let mut kcp = kcp_server::KcpListener::<i32,_>::new("0.0.0.0:5555", config).await?;
+    let kcp = kcp_server::KcpListener::<i32,_>::new("0.0.0.0:5555", config).await?;
 
     kcp.set_buff_input(async move |peer, data| {
         let mut token = peer.token.lock().await;

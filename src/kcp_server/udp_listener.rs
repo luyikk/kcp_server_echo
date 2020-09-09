@@ -1,6 +1,6 @@
 use std::error::Error;
 use udp_server::{UdpServer, Peer};
-use std::sync::{Weak, Arc};
+use std::sync:: Arc;
 use std::future::Future;
 use futures::executor::block_on;
 use std::net::SocketAddr;
