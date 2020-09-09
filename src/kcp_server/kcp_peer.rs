@@ -7,8 +7,11 @@ use std::cell::{RefCell, UnsafeCell};
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
 use std::ops::Deref;
+use std::net::SocketAddr;
+use std::future::Future;
 
-
+/// KCP INPUT
+/// 锁拆分 将 peeksize input recv 放在一个锁里
 pub struct KcpInputRecv(Arc<UnsafeCell<Kcp>>);
 unsafe impl Send for KcpInputRecv{}
 unsafe impl Sync for KcpInputRecv{}
@@ -34,7 +37,8 @@ impl KcpInputRecv{
 }
 
 
-
+/// KCPSend
+/// 将Send 有关的操作 锁此拆分
 pub struct KcpSend(Arc<UnsafeCell<Kcp>>);
 unsafe impl Sync for KcpSend{}
 unsafe impl Send for KcpSend{}
@@ -45,40 +49,33 @@ impl KcpSend{
             (*self.0.get()).send(buf)
         }
     }
-}
 
-pub struct KcpUpdate(Arc<UnsafeCell<Kcp>>);
-unsafe impl Sync for KcpUpdate{}
-unsafe impl Send for KcpUpdate{}
-
-impl KcpUpdate{
-    pub async fn update(&self, current: u32) -> KcpResult<()>{
+    pub fn update(&self, current: u32) -> impl Future<Output = KcpResult<()>> {
         unsafe {
-            let x=self.0.get();
-            (*x).update(current).await
+            (*self.0.get()).update(current)
         }
     }
 
-    pub async fn flush(&self) -> KcpResult<()>{
+    pub fn flush(&self) -> impl Future<Output = KcpResult<()>>{
         unsafe {
-            (*self.0.get()).flush().await
+            (*self.0.get()).flush()
         }
     }
 
-    pub async fn flush_async(&self)-> KcpResult<()>{
+    pub async fn flush_async(&self)-> impl Future<Output = KcpResult<()>>{
         unsafe {
-            (*self.0.get()).flush_async().await
+            (*self.0.get()).flush_async()
         }
     }
 }
+
 
 impl Kcp{
-    pub fn split(self)->(KcpInputRecv,KcpSend,KcpUpdate){
+    pub fn split(self)->(KcpInputRecv,KcpSend){
         let recv = Arc::new(UnsafeCell::new(self));
         let send = recv.clone();
-        let update = recv.clone();
 
-        (KcpInputRecv(recv),KcpSend(send),KcpUpdate(update))
+        (KcpInputRecv(recv),KcpSend(send))
     }
 }
 
@@ -92,9 +89,8 @@ impl Kcp{
 pub struct KcpPeer<T: Send> {
     pub kcp_recv:Arc<Mutex<KcpInputRecv>>,
     pub kcp_send:Arc<Mutex<KcpSend>>,
-    pub kcp_update:Arc<Mutex<KcpUpdate>>,
     pub conv: u32,
-    pub addr: String,
+    pub addr: SocketAddr,
     pub token: Mutex<TokenStore<T>>,
     pub last_rev_time: AtomicI64
 }

@@ -1,27 +1,25 @@
 use super::udp_listener::UdpListener;
+use std::cell::RefCell;
+use std::sync::Arc;
 
 /// 用来存储 UDP SERVER
-pub struct UdpServerStore(pub Option<Box<dyn UdpListener>>);
+pub struct UdpServerStore(pub RefCell<Option<Arc<dyn UdpListener>>>);
+
+unsafe impl Send for UdpServerStore{}
+unsafe impl Sync for UdpServerStore{}
 
 impl UdpServerStore {
-    /// 是否有值
-    pub fn have(&self) -> bool {
-        match &self.0 {
-            None => false,
-            Some(_) => true,
-        }
-    }
 
     /// 获取
-    pub fn get(&mut self) -> Option<&mut Box<dyn UdpListener>> {
-        match self.0 {
+    pub fn get(&self) -> Option<Arc<dyn UdpListener>> {
+        match *self.0.borrow_mut() {
             None => None,
-            Some(ref mut v) => Some(v),
+            Some(ref mut v) => Some(v.clone()),
         }
     }
 
     /// 设置
-    pub fn set(&mut self, v: Box<dyn UdpListener>) {
-        self.0 = Some(v);
+    pub fn set(&self, v: Arc<dyn UdpListener>) {
+        (*self.0.borrow_mut() )= Some(v);
     }
 }
