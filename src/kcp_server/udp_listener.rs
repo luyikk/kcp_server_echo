@@ -25,9 +25,10 @@ impl<I, R, T, S> UdpListener for UdpServer<I, R, T, S>
     }
 
     fn remove_peer(&self,addr:SocketAddr)->bool{
-        block_on(async move{
-            self.remove_peer(addr).await
-        })
+        self.remove_peer(addr)
     }
 }
+
+
+
 

@@ -630,9 +630,9 @@ dependencies = [
 
 [[package]]
 name = "udp_server"
-version = "0.3.1"
+version = "0.3.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "bd4a024ee44cbc0c3b52a2efc1e36f7f440f6eb32ea4ba929c59ffaf8f65de45"
+checksum = "72f73666a4aa57934731dd396b780602cc4c658a766b5a9ae120dd518db1f0c1"
 dependencies = [
  "futures",
  "net2",

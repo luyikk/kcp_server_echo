@@ -27,7 +27,8 @@ async fn main() -> Result<(), Box<dyn Error>>{
             *id += 1;
         }
 
-        peer.kcp_send.lock().await.send(&data)?;
+        peer.send(&data).await?;
+        peer.flush().await?;
         Ok(())
     }).await;
 

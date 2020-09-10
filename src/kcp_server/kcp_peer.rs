@@ -1,78 +1,51 @@
 use tokio::sync::Mutex;
 use udp_server:: TokenStore;
 use crate::kcp::{Kcp, KcpResult};
-use std::cell::UnsafeCell;
 use std::sync::atomic::AtomicI64;
 use std::sync::Arc;
 use std::net::SocketAddr;
-use std::future::Future;
 
-/// KCP INPUT
-/// 锁拆分 将 peeksize input recv 放在一个锁里
-pub struct KcpInputRecv(Arc<UnsafeCell<Kcp>>);
-unsafe impl Send for KcpInputRecv{}
-unsafe impl Sync for KcpInputRecv{}
+/// KCP LOCK
+/// 将KCP 对象操作完全上锁,以保证内存安全 通知简化调用
+pub struct KcpLock(Arc<Mutex<Kcp>>);
+unsafe impl Send for KcpLock{}
+unsafe impl Sync for KcpLock{}
 
-impl KcpInputRecv{
-    pub fn peeksize(&self)-> KcpResult<usize>{
-        unsafe {
-            (*self.0.get()).peeksize()
-        }
+impl KcpLock{
+    pub async fn peeksize(&self)-> KcpResult<usize>{
+        self.0.lock().await.peeksize()
     }
 
-    pub fn input(&self, buf: &[u8]) -> KcpResult<usize>{
-        unsafe {
-            (*self.0.get()).input(buf)
-        }
+    pub async fn input(&self, buf: &[u8]) -> KcpResult<usize>{
+        self.0.lock().await.input(buf)
     }
 
-    pub fn recv(&self, buf: &mut [u8]) -> KcpResult<usize>{
-        unsafe {
-            (*self.0.get()).recv(buf)
-        }
-    }
-}
-
-
-/// KCPSend
-/// 将Send 有关的操作 锁此拆分
-pub struct KcpSend(Arc<UnsafeCell<Kcp>>);
-unsafe impl Sync for KcpSend{}
-unsafe impl Send for KcpSend{}
-
-impl KcpSend{
-    pub fn send(&self,  buf: &[u8]) -> KcpResult<usize>{
-        unsafe {
-            (*self.0.get()).send(buf)
-        }
+    pub async fn recv(&self, buf: &mut [u8]) -> KcpResult<usize>{
+        self.0.lock().await.recv(buf)
     }
 
-    pub fn update(&self, current: u32) -> impl Future<Output = KcpResult<()>> {
-        unsafe {
-            (*self.0.get()).update(current)
-        }
+    pub async fn send(&self, buf: &[u8]) -> KcpResult<usize>{
+        self.0.lock().await.send(buf)
     }
 
-    pub fn flush(&self) -> impl Future<Output = KcpResult<()>>{
-        unsafe {
-            (*self.0.get()).flush()
-        }
+    pub async fn update(&self, current: u32) ->  KcpResult<()>{
+        self.0.lock().await.update(current).await
     }
 
-    pub async fn flush_async(&self)-> impl Future<Output = KcpResult<()>>{
-        unsafe {
-            (*self.0.get()).flush_async()
-        }
+    pub async fn flush(&self) -> KcpResult<()>{
+        self.0.lock().await.flush().await
+    }
+
+    pub async fn flush_async(&self)->  KcpResult<()>{
+        self.0.lock().await.flush_async().await
     }
 }
 
 
 impl Kcp{
-    pub fn split(self)->(KcpInputRecv,KcpSend){
-        let recv = Arc::new(UnsafeCell::new(self));
-        let send = recv.clone();
-
-        (KcpInputRecv(recv),KcpSend(send))
+    pub fn get_lock(self)->KcpLock{
+        let recv = Arc::new(Mutex::new(self));
+        KcpLock(recv)
     }
 }
 
@@ -84,8 +57,7 @@ impl Kcp{
 /// 同时还需要一个UPDATE 线程 去10MS 一次的运行KCP UPDATE
 /// token 用于扩赞逻辑上下文
 pub struct KcpPeer<T: Send> {
-    pub kcp_recv:Arc<Mutex<KcpInputRecv>>,
-    pub kcp_send:Arc<Mutex<KcpSend>>,
+    pub kcp:KcpLock,
     pub conv: u32,
     pub addr: SocketAddr,
     pub token: Mutex<TokenStore<T>>,
@@ -94,3 +66,35 @@ pub struct KcpPeer<T: Send> {
 
 unsafe impl<T: Send> Send for KcpPeer<T>{}
 unsafe impl<T: Send> Sync for KcpPeer<T>{}
+
+/// 简化KCP PEER 函数
+impl <T:Send> KcpPeer<T>{
+    pub async fn peeksize(&self)-> KcpResult<usize>{
+        self.kcp.peeksize().await
+    }
+
+    pub async fn input(&self, buf: &[u8]) -> KcpResult<usize>{
+        self.kcp.input(buf).await
+    }
+
+    pub async fn recv(&self, buf: &mut [u8]) -> KcpResult<usize>{
+        self.kcp.recv(buf).await
+    }
+
+    pub async fn send(&self, buf: &[u8]) -> KcpResult<usize>{
+        self.kcp.send(buf).await
+    }
+
+    pub async fn update(&self, current: u32) ->  KcpResult<()>{
+        self.kcp.update(current).await
+    }
+
+    pub async fn flush(&self) -> KcpResult<()>{
+        self.kcp.flush().await
+    }
+
+    pub async fn flush_async(&self)->  KcpResult<()>{
+        self.kcp.flush_async().await
+    }
+
+}

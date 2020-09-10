@@ -832,7 +832,7 @@ impl Kcp {
     pub async fn flush(&mut self) -> KcpResult<()> {
         if !self.updated {
             debug!("flush updated() must be called at least once");
-            return Err(Error::NeedUpdate);
+            return Ok(());
         }
 
         let mut segment = KcpSegment::default();

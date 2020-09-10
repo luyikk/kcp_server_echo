@@ -111,28 +111,24 @@ impl<S,R> KcpListener<S,R>
         if let Some(udp_server)=self.udp_server.get() {
             tokio::spawn(async move {
                 loop {
-                    {
-                        let res = peers.try_lock();
-                        if let Ok(mut peers) = res {
-                            let mut remove_vec = vec![];
+                    let res = peers.try_lock();
+                    if let Ok(mut peers) = res {
+                        let mut remove_vec = vec![];
 
-                            for conv in peers.keys() {
-                                if let Some(peer) = peers.get(conv) {
-                                    let time = peer.last_rev_time.load(Ordering::Acquire);
-                                    if chrono::Local::now().timestamp() - time > 30 {
+                        for conv in peers.keys() {
+                            if let Some(peer) = peers.get(conv) {
+                                let time = peer.last_rev_time.load(Ordering::Acquire);
+                                if chrono::Local::now().timestamp() - time > 30 {
+                                    if udp_server.remove_peer(peer.addr) {
                                         remove_vec.push(*conv);
                                     }
                                 }
                             }
+                        }
 
-                            for conv in remove_vec {
-                                if let Some(peer) = peers.remove(&conv) {
-                                    let addr = peer.addr;
-                                    if udp_server.remove_peer(addr) {
-                                        info!("remove conv:{}", conv);
-                                    }
-                                }
-                            }
+                        for conv in remove_vec {
+                            peers.remove(&conv);
+                            info!("remove conv:{}", conv);
                         }
                     }
 
@@ -155,7 +151,7 @@ impl<S,R> KcpListener<S,R>
                         let peer = p.clone();
                         let time=Self::current();
                         tokio::spawn(async move {
-                            if let Err(err) =peer.kcp_send.lock().await.update(time).await{
+                            if let Err(err) =peer.update(time).await{
                                 error!("update error:{}", err);
                             }
                         });
@@ -216,7 +212,6 @@ impl<S,R> KcpListener<S,R>
        else{
            peer.send(&data).await?;
        }
-
        Ok(())
    }
 
@@ -224,21 +219,21 @@ impl<S,R> KcpListener<S,R>
     /// 将数据包写入2
     #[inline]
     async fn recv_kcp_buff( this: Arc<Self>,kcp_peer:Arc<KcpPeer<S>>, data:Vec<u8>) ->Result<(), Box<dyn Error>> {
-        kcp_peer.kcp_recv.lock().await.input(&data)?;
+        kcp_peer.input(&data).await?;
         Self::recv_buff(this,kcp_peer).await?;
         Ok(())
     }
 
     /// 读取数据包
     #[inline]
-    async fn recv_buff(this:Arc<Self>, kcp: Arc<KcpPeer<S>>)->Result<(), Box<dyn Error>> {
-        let kcp_recv = kcp.kcp_recv.lock().await;
-        while let Ok(len) = kcp_recv.peeksize() {
+    async fn recv_buff(this:Arc<Self>, kcp_peer: Arc<KcpPeer<S>>)->Result<(), Box<dyn Error>> {
+
+        while let Ok(len) = kcp_peer.peeksize().await {
             let mut buff = vec![0; len];
-            if let Ok(_) = kcp_recv.recv(&mut buff) {
+            if let Ok(_) = kcp_peer.recv(&mut buff).await {
                 let p=this.buff_input.get() as usize;
                 if let Some(input)=(*unsafe{std::mem::transmute::<_,&mut BuffInputStore<S,R>>(p)}).get(){
-                    input(kcp.clone(),Bytes::from(buff)).await?;
+                    input(kcp_peer.clone(),Bytes::from(buff)).await?;
                 }
             }
         }
@@ -260,7 +255,7 @@ impl<S,R> KcpListener<S,R>
         match peers_lock.get(&conv) {
             Some(kcp_peer) => {
                 kcp_peer.last_rev_time.store(chrono::Local::now().timestamp(), Ordering::Release);
-                if let Err(er) = kcp_peer.kcp_recv.lock().await.input(data) {
+                if let Err(er) = kcp_peer.input(data).await {
                     error!("get_kcp_peer input is err:{}", er);
                 }
                 return Some(kcp_peer.clone())
@@ -293,7 +288,6 @@ impl<S,R> KcpListener<S,R>
         buff.put_slice(&data);
         buff.put_u32_le(conv);
         peer.send(&buff).await?;
-
         Ok(())
     }
 
@@ -302,12 +296,11 @@ impl<S,R> KcpListener<S,R>
     async fn make_kcp_peer_ptr(conv:u32,buff:&Vec<u8>,peer:Arc<Peer<()>>,this_ptr:Arc<KcpListener<S,R>>)-> Result<Arc<KcpPeer<S>>, Box<dyn Error>>{
         let mut kcp = Kcp::new(conv, peer.udp_sock.clone());
         this_ptr.config.apply_config(&mut kcp);
-        let (recv,send)= kcp.split();
-        recv.input(buff)?;
+        let kcp_lock= kcp.get_lock();
+        kcp_lock.input(buff).await?;
 
        let  kcp_peer_obj = KcpPeer {
-            kcp_recv:Arc::new(Mutex::new(recv)),
-            kcp_send:Arc::new(Mutex::new(send)),
+            kcp:kcp_lock,
             conv,
             addr: peer.addr,
             token: Mutex::new(TokenStore(None)),
@@ -315,7 +308,6 @@ impl<S,R> KcpListener<S,R>
         };
 
         let kcp_peer_ptr=Arc::new(kcp_peer_obj);
-
         Ok(kcp_peer_ptr)
     }
 
